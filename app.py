@@ -1,144 +1,313 @@
+"""
+InPost City Analyzer — Streamlit Dashboard
+
+A dispatcher-control dashboard for managing parcel locker delivery
+zones in Kraków. Visualizes K-Means clustering with fleet allocation
+(EV / Hybrid / Diesel) driven by air quality data.
+
+Usage:
+    streamlit run app.py
+"""
+
 import streamlit as st
 import pandas as pd
-import pydeck as pdk
-import numpy as np
 
-# 1. KONFIGURACJA STRONY (Musi być na samej górze)
-st.set_page_config(page_title="InPost City Analyzer", page_icon="📦", layout="wide")
+from src.config import (
+    DEFAULT_N_ZONES,
+    DISPLAY_COLUMNS,
+    EV_COUNT,
+    HYBRID_COUNT,
+    MAX_ZONES,
+    MIN_ZONES,
+    RAW_CSV_PATH,
+    TOTAL_CARS,
+)
+from src.data.transformer import add_display_columns, fill_missing_air_data, fill_missing_data
+from src.models.clustering import get_zone_centers, run_clustering_pipeline
+from src.visualization.charts import (
+    air_quality_pie_chart,
+    fleet_allocation_bar_chart,
+    smog_vs_fleet_scatter,
+    zone_machine_count_chart,
+)
+from src.visualization.map_layers import (
+    build_deck,
+    build_view_state,
+    create_scatterplot_layer,
+    create_zone_label_layer,
+    create_zone_polygon_layer,
+)
 
-# 2. ŁADOWANIE DANYCH (Z cache'owaniem, żeby aplikacja nie ładowała pliku przy każdym kliknięciu)
+# ── Page config ──────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="InPost City Analyzer",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Custom CSS ───────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    /* ---- Global ---- */
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    /* ---- Header accent bar ---- */
+    .stApp > header {
+        background: linear-gradient(90deg, #FFCD00 0%, #FF8C00 100%);
+    }
+
+    /* ---- Metric cards ---- */
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border: 1px solid rgba(255, 205, 0, 0.15);
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+    div[data-testid="stMetric"] label {
+        color: #a0a0b0 !important;
+        font-size: 0.78rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: #FFCD00 !important;
+        font-weight: 700;
+        font-size: 1.8rem !important;
+    }
+
+    /* ---- Sidebar ---- */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f0f1a 0%, #1a1a2e 100%);
+        border-right: 1px solid rgba(255, 205, 0, 0.1);
+    }
+    section[data-testid="stSidebar"] .stMarkdown h1,
+    section[data-testid="stSidebar"] .stMarkdown h2,
+    section[data-testid="stSidebar"] .stMarkdown h3 {
+        color: #FFCD00;
+    }
+
+    /* ---- Tabs ---- */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        background: rgba(26, 26, 46, 0.5);
+        border-radius: 12px;
+        padding: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 8px 20px;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #FFCD00 0%, #FF8C00 100%) !important;
+        color: #1a1a2e !important;
+        font-weight: 700;
+    }
+
+    /* ---- Expander ---- */
+    .streamlit-expanderHeader {
+        font-weight: 600;
+        color: #FFCD00;
+    }
+
+    /* ---- Hide Streamlit branding ---- */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Data loading ─────────────────────────────────────────────────────────────
 @st.cache_data
-def load_data():
-    # Podmień na nazwę swojego ostatecznego pliku CSV
-    df = pd.read_csv("inpost_parcel_locker.csv")
-    
-    # Upewnijmy się, że 'is_doubled' jest intem, a jeśli z jakiegoś powodu masz nadal 'apm_doubled', to zróbmy flagę tu:
-    if 'apm_doubled' in df.columns:
-        df['is_doubled'] = df['apm_doubled'].notna().astype(int)
-    
-    # Funkcja do mapowania poziomu smogu na kolory RGB [R, G, B, Opacity]
-    def get_color(air_index):
-        if air_index ==  "VERY_GOOD":
-            return [46, 204, 113, 200]  # Zielony (Flota spalinowa OK)
-        elif air_index ==  "GOOD":
-            return [241, 196, 15, 200]  # Żółty/Pomarańczowy (Ostrzeżenie)
-        elif air_index ==  "VERY_BAD":
-            return [231, 76, 60, 200]   # Czerwony (Wymagane EV!)
-        else:
-            return [149, 165, 166, 200] # Szary (Brak danych)
-            
-    df['color'] = df['air_index_level'].apply(get_color)
-    
-    # Rozmiar kropki na mapie na podstawie gabarytu maszyny (typ 3.0, 4.0, 6.0)
-    # Mnożymy x15, żeby promień kropki w metrach był widoczny na mapie
-    df['radius'] = df['physical_type_mapped'].fillna(4.0) * 15 
-    
-    # Jeśli nie ma na liście zamienników, dajemy ładny komunikat
-    df['recommended_low_interest_box_machines_list'] = df['recommended_low_interest_box_machines_list'].fillna("Brak zaleceń - brak przeciążenia")
-    
+def load_raw_data() -> pd.DataFrame:
+    """Load and pre-process the raw CSV (cached)."""
+    df = pd.read_csv(RAW_CSV_PATH)
+    df = fill_missing_data(df)
+    df = fill_missing_air_data(df)
     return df
 
-df = load_data()
 
-# 3. INTERFEJS UŻYTKOWNIKA - PANEL BOCZNY (Sidebar)
-st.sidebar.image("https://inpost.pl/sites/default/files/inpost-logo.png", width=150)
-st.sidebar.title("🎛️ Panel Dyspozytora")
-st.sidebar.markdown("Zarządzaj wskaźnikami Green-SLA oraz przepustowością sieci w czasie rzeczywistym.")
+raw_df = load_raw_data()
 
-# Filtry
-st.sidebar.header("Filtry")
+# ── Sidebar ──────────────────────────────────────────────────────────────────
+st.sidebar.title("🎛️ Dispatcher Panel")
+st.sidebar.markdown("Manage Green-SLA metrics and fleet optimization in real time.")
 
-# Filtr: Przeciążenie
-show_congested_only = st.sidebar.checkbox("⚠️ Pokaż tylko przeciążone (is_doubled == 1)", value=False)
+# Filters
+st.sidebar.header("🔍 Filters")
+show_congested = st.sidebar.checkbox("⚠️ Show congested only (is_doubled = 1)", value=False)
+air_options = sorted(raw_df["air_index_level"].dropna().unique().tolist())
+air_filter = st.sidebar.multiselect("🌬️ Air Quality Level", options=air_options, default=air_options)
+location_filter = st.sidebar.radio(
+    "🏢 Location Type",
+    options=["All", "Outdoor (Flexible)", "Indoor (Strict SLA)"],
+)
+show_zones = st.sidebar.checkbox("🗺️ Show delivery zone polygons", value=False)
 
-# Filtr: Smog
-air_filter = st.sidebar.multiselect(
-    "🌬️ Filtruj Jakość Powietrza:",
-    options=df['air_index_level'].dropna().unique(),
-    default=df['air_index_level'].dropna().unique()
+# Fleet configuration (visible only when zones are toggled on)
+if show_zones:
+    st.sidebar.header("⚡ Fleet Configuration")
+    n_zones = st.sidebar.slider("Number of Zones (K)", MIN_ZONES, MAX_ZONES, DEFAULT_N_ZONES)
+    total_cars = st.sidebar.slider("Total Vehicles", 10, 100, TOTAL_CARS)
+    ev_slider = st.sidebar.slider("Electric Vehicles (EV)", 0, total_cars, min(EV_COUNT, total_cars))
+    hybrid_slider = st.sidebar.slider(
+        "Hybrid Vehicles", 0, total_cars - ev_slider, min(HYBRID_COUNT, total_cars - ev_slider)
+    )
+    diesel_display = total_cars - ev_slider - hybrid_slider
+    st.sidebar.metric("Diesel (remaining)", diesel_display)
+else:
+    # Use defaults when sliders are hidden
+    n_zones = DEFAULT_N_ZONES
+    total_cars = TOTAL_CARS
+    ev_slider = min(EV_COUNT, total_cars)
+    hybrid_slider = min(HYBRID_COUNT, total_cars - ev_slider)
+
+# ── Clustering pipeline (re-runs when sliders change) ────────────────────────
+@st.cache_data
+def run_pipeline(
+    _raw_df: pd.DataFrame,
+    n_zones: int,
+    total_cars: int,
+    ev_count: int,
+    hybrid_count: int,
+):
+    """Wrapper for clustering pipeline with Streamlit caching."""
+    enriched_df, zone_stats, model, polygons = run_clustering_pipeline(
+        _raw_df,
+        n_zones=n_zones,
+        total_cars=total_cars,
+        ev_count=ev_count,
+        hybrid_count=hybrid_count,
+    )
+    enriched_df = add_display_columns(enriched_df)
+    centers = get_zone_centers(model)
+    # Add labels to centers
+    profile_map = dict(zip(zone_stats["delivery_zone_id"], zone_stats["fleet_profile"]))
+    centers["label"] = centers["delivery_zone_id"].map(
+        lambda zid: f"Zone {zid}\n{profile_map.get(zid, '')}"
+    )
+    return enriched_df, zone_stats, polygons, centers
+
+
+enriched_df, zone_stats, polygons, centers = run_pipeline(
+    raw_df, n_zones, total_cars, ev_slider, hybrid_slider
 )
 
-# Filtr: Indoor / Outdoor
-location_type_filter = st.sidebar.radio(
-    "🏢 Typ Lokalizacji (Okna Czasowe):",
-    options=["Wszystkie", "Outdoor (Elastyczne)", "Indoor (Twarde)"]
-)
+# ── Apply filters ────────────────────────────────────────────────────────────
+filtered_df = enriched_df.copy()
 
-# 4. LOGIKA FILTROWANIA DANYCH
-filtered_df = df.copy()
+if show_congested:
+    filtered_df = filtered_df[filtered_df["is_doubled"] == 1]
 
-if show_congested_only:
-    filtered_df = filtered_df[filtered_df['is_doubled'] == 1]
-    
 if air_filter:
-    filtered_df = filtered_df[filtered_df['air_index_level'].isin(air_filter)]
+    filtered_df = filtered_df[filtered_df["air_index_level"].isin(air_filter)]
 
-if location_type_filter == "Outdoor (Elastyczne)":
-    filtered_df = filtered_df[filtered_df['location_type'] == 'Outdoor']
-elif location_type_filter == "Indoor (Twarde)":
-    filtered_df = filtered_df[filtered_df['location_type'] == 'Indoor']
+if location_filter == "Outdoor (Flexible)":
+    filtered_df = filtered_df[filtered_df["location_type"] == "Outdoor"]
+elif location_filter == "Indoor (Strict SLA)":
+    filtered_df = filtered_df[filtered_df["location_type"] == "Indoor"]
 
-# 5. WIDOK GŁÓWNY - DASHBOARD
-st.title("🗺️ InPost City Analyzer - Kraków")
-st.markdown("Mapa przepustowości sieci Paczkomatów i optymalizacji floty pod kątem emisji CO2.")
+# ── Header ───────────────────────────────────────────────────────────────────
+st.title("🗺️ InPost City Analyzer — Kraków")
+st.markdown(
+    "Real-time parcel locker network capacity and CO₂-optimized fleet management dashboard."
+)
 
-# KPI (Kluczowe Wskaźniki Efektywności) na górze
+# KPI row
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Wszystkie widoczne maszyny", len(filtered_df))
-col2.metric("Maszyny z wysokim Smogiem", len(filtered_df[filtered_df['air_index_level'].isin(['POOR', 'VERY_POOR'])]))
-col3.metric("Maszyny Indoor (Trudne SLA)", len(filtered_df[filtered_df['location_type'] == 'Indoor']))
-col4.metric("Punkty krytyczne (Zatory)", len(filtered_df[filtered_df['is_doubled'] == 1]))
+col1.metric("Visible Lockers", f"{len(filtered_df):,}")
+col2.metric("High Pollution", len(filtered_df[filtered_df["air_index_level"] == "VERY_BAD"]))
+col3.metric("Indoor (Strict SLA)", len(filtered_df[filtered_df["location_type"] == "Indoor"]))
+col4.metric("Congested Points", len(filtered_df[filtered_df["is_doubled"] == 1]))
 
-# 6. RENDEROWANIE MAPY W PYDECK
-# Ustawiamy środek mapy na podstawie średnich współrzędnych z danych
-midpoint = (np.average(filtered_df['location_latitude']), np.average(filtered_df['location_longitude'])) if not filtered_df.empty else (50.06, 19.94)
+# ── Tabs ─────────────────────────────────────────────────────────────────────
+tab_map, tab_analytics, tab_data = st.tabs(["🗺️ Map", "📊 Analytics", "📋 Data"])
 
-# Definiujemy warstwę punktową (Scatterplot)
-layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=filtered_df,
-    get_position='[location_longitude, location_latitude]',
-    get_color='color',
-    get_radius='radius',
-    pickable=True,
-    opacity=0.8,
-    stroked=True,
-    filled=True,
-    radius_scale=1,
-    radius_min_pixels=3,
-    radius_max_pixels=30,
-    line_width_min_pixels=1,
-)
+# ── Map Tab ──────────────────────────────────────────────────────────────────
+with tab_map:
+    layers = [create_scatterplot_layer(filtered_df)]
 
-# Konfigurujemy widok mapy
-view_state = pdk.ViewState(
-    latitude=midpoint[0],
-    longitude=midpoint[1],
-    zoom=11.5,
-    pitch=45, # Pochylenie mapy dla fajnego efektu 3D
-)
+    if show_zones and polygons:
+        layers.append(create_zone_polygon_layer(polygons))
+        layers.append(create_zone_label_layer(centers))
 
-# Wyświetlamy mapę z Tooltipem
-st.pydeck_chart(pdk.Deck(
-    map_provider='carto',            # Używamy darmowego dostawcy map
-    map_style='dark',                # Styl mapy (dark lub light)
-    initial_view_state=view_state,
-    layers=[layer],
-    tooltip={
-        "html": "<b>ID:</b> {name} <br/>"
-                "<b>Smog:</b> {air_index_level} <br/>"
-                "<b>Typ:</b> {location_type} (Rozmiar: {physical_type_mapped}) <br/>"
-                "<b>Przeciążona?:</b> {is_doubled} <br/>"
-                "<hr/>"
-                "<b>➡️ Rekomendowane przekierowanie:</b> <br/> {recommended_low_interest_box_machines_list}",
-        "style": {
-            "backgroundColor": "steelblue",
-            "color": "white",
-            "font-family": "Helvetica, Arial, sans-serif"
-        }
-    }
-))
+    view = build_view_state(filtered_df)
+    deck = build_deck(layers, view)
+    st.pydeck_chart(deck, width="stretch")
 
-# 7. TABELA Z DANYMI (Opcjonalnie pod mapą)
-with st.expander("Kliknij, aby rozwinąć surowe dane analityczne"):
-    st.dataframe(filtered_df[['name', 'location_type', 'physical_type_mapped', 'is_doubled', 'air_index_level', 'recommended_low_interest_box_machines_list']])
+    with st.expander("ℹ️ Map Legend"):
+        legend_cols = st.columns(3)
+        legend_cols[0].markdown("🟢 **Green dot** — Very Good air quality")
+        legend_cols[1].markdown("🟡 **Yellow dot** — Good air quality")
+        legend_cols[2].markdown("🔴 **Red dot** — Very Bad air quality")
+        st.markdown("---")
+        zone_cols = st.columns(3)
+        zone_cols[0].markdown("🟩 **Green zone** — EV Dominant fleet")
+        zone_cols[1].markdown("🟦 **Blue zone** — Hybrid Mixed fleet")
+        zone_cols[2].markdown("⬜ **Gray zone** — Diesel Dominant fleet")
+
+# ── Analytics Tab ────────────────────────────────────────────────────────────
+with tab_analytics:
+    st.subheader("Fleet Allocation Overview")
+
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        st.plotly_chart(
+            fleet_allocation_bar_chart(zone_stats),
+            width="stretch",
+        )
+    with chart_col2:
+        st.plotly_chart(
+            air_quality_pie_chart(filtered_df),
+            width="stretch",
+        )
+
+    st.markdown("---")
+
+    chart_col3, chart_col4 = st.columns(2)
+    with chart_col3:
+        st.plotly_chart(
+            zone_machine_count_chart(zone_stats),
+            width="stretch",
+        )
+    with chart_col4:
+        st.plotly_chart(
+            smog_vs_fleet_scatter(zone_stats),
+            width="stretch",
+        )
+
+    # Zone summary table
+    st.subheader("Zone Statistics")
+    st.dataframe(
+        zone_stats.style.format({"avg_smog": "{:.2f}"}),
+        width="stretch",
+        hide_index=True,
+    )
+
+# ── Data Tab ─────────────────────────────────────────────────────────────────
+with tab_data:
+    st.subheader(f"Filtered Data — {len(filtered_df):,} lockers")
+
+    available_cols = [c for c in DISPLAY_COLUMNS if c in filtered_df.columns]
+    st.dataframe(
+        filtered_df[available_cols],
+        width="stretch",
+        hide_index=True,
+        height=500,
+    )
+
+    csv_bytes = filtered_df[available_cols].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Download filtered CSV",
+        data=csv_bytes,
+        file_name="inpost_filtered_export.csv",
+        mime="text/csv",
+    )
