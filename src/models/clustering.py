@@ -97,9 +97,16 @@ def allocate_fleet(
     )
 
     total_machines = zone_stats["machine_count"].sum()
-    zone_stats["cars_needed"] = np.ceil(
-        (zone_stats["machine_count"] / total_machines) * total_cars
-    ).astype(int)
+    
+    # Use Largest Remainder Method to ensure sum(cars_needed) exactly equals total_cars
+    exact_cars = (zone_stats["machine_count"] / total_machines) * total_cars
+    zone_stats["cars_needed"] = np.floor(exact_cars).astype(int)
+    
+    remainder = total_cars - zone_stats["cars_needed"].sum()
+    if remainder > 0:
+        fractional_parts = exact_cars - zone_stats["cars_needed"]
+        top_indices = fractional_parts.nlargest(remainder).index
+        zone_stats.loc[top_indices, "cars_needed"] += 1
 
     # Sort by worst smog first — EVs go there
     zone_stats = zone_stats.sort_values("avg_smog", ascending=False).reset_index(drop=True)

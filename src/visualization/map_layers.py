@@ -41,7 +41,7 @@ def create_zone_polygon_layer(polygons: List[dict]) -> pdk.Layer:
         get_fill_color="color",
         get_line_color=[255, 255, 255, 80],
         line_width_min_pixels=2,
-        pickable=True,
+        pickable=False,
         stroked=True,
         filled=True,
         extruded=False,

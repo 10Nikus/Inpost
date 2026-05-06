@@ -162,8 +162,6 @@ if show_zones:
     hybrid_slider = st.sidebar.slider(
         "Hybrid Vehicles", 0, total_cars - ev_slider, min(HYBRID_COUNT, total_cars - ev_slider)
     )
-    diesel_display = total_cars - ev_slider - hybrid_slider
-    st.sidebar.metric("Diesel (remaining)", diesel_display)
 else:
     # Use defaults when sliders are hidden
     n_zones = DEFAULT_N_ZONES
@@ -211,9 +209,9 @@ if show_congested:
 if air_filter:
     filtered_df = filtered_df[filtered_df["air_index_level"].isin(air_filter)]
 
-if location_filter == "Outdoor (Flexible)":
+if location_filter == "Outdoor":
     filtered_df = filtered_df[filtered_df["location_type"] == "Outdoor"]
-elif location_filter == "Indoor (Strict SLA)":
+elif location_filter == "Indoor":
     filtered_df = filtered_df[filtered_df["location_type"] == "Indoor"]
 
 # ── Header ───────────────────────────────────────────────────────────────────
@@ -226,7 +224,7 @@ st.markdown(
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Visible Lockers", f"{len(filtered_df):,}")
 col2.metric("High Pollution", len(filtered_df[filtered_df["air_index_level"] == "VERY_BAD"]))
-col3.metric("Indoor (Strict SLA)", len(filtered_df[filtered_df["location_type"] == "Indoor"]))
+col3.metric("Indoor", len(filtered_df[filtered_df["location_type"] == "Indoor"]))
 col4.metric("Congested Points", len(filtered_df[filtered_df["is_doubled"] == 1]))
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -257,41 +255,49 @@ with tab_map:
 
 # ── Analytics Tab ────────────────────────────────────────────────────────────
 with tab_analytics:
-    st.subheader("Fleet Allocation Overview")
+    if filtered_df.empty:
+        st.warning("⚠️ No lockers match your filter criteria. Please adjust the filters to view analytics.")
+    else:
+        st.subheader("Fleet Allocation Overview")
 
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        st.plotly_chart(
-            fleet_allocation_bar_chart(zone_stats),
-            width="stretch",
-        )
-    with chart_col2:
-        st.plotly_chart(
-            air_quality_pie_chart(filtered_df),
-            width="stretch",
-        )
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            st.plotly_chart(
+                fleet_allocation_bar_chart(zone_stats),
+                width="stretch",
+            )
+        with chart_col2:
+            st.plotly_chart(
+                air_quality_pie_chart(filtered_df),
+                width="stretch",
+            )
 
-    st.markdown("---")
+        st.markdown("---")
 
-    chart_col3, chart_col4 = st.columns(2)
-    with chart_col3:
-        st.plotly_chart(
-            zone_machine_count_chart(zone_stats),
-            width="stretch",
-        )
-    with chart_col4:
-        st.plotly_chart(
-            smog_vs_fleet_scatter(zone_stats),
-            width="stretch",
-        )
+        chart_col3, chart_col4 = st.columns(2)
+        with chart_col3:
+            st.plotly_chart(
+                zone_machine_count_chart(zone_stats),
+                width="stretch",
+            )
+        with chart_col4:
+            st.plotly_chart(
+                smog_vs_fleet_scatter(zone_stats),
+                width="stretch",
+            )
 
-    # Zone summary table
-    st.subheader("Zone Statistics")
-    st.dataframe(
-        zone_stats.style.format({"avg_smog": "{:.2f}"}),
-        width="stretch",
-        hide_index=True,
-    )
+        # Zone summary table
+        st.subheader("Zone Statistics")
+        st.dataframe(
+            zone_stats,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "delivery_zone_id": st.column_config.TextColumn("Zone ID"),
+                "avg_smog": st.column_config.NumberColumn("Avg Smog", format="%.2f"),
+                "machine_count": st.column_config.NumberColumn("Machines"),
+            }
+        )
 
 # ── Data Tab ─────────────────────────────────────────────────────────────────
 with tab_data:
@@ -303,6 +309,10 @@ with tab_data:
         width="stretch",
         hide_index=True,
         height=500,
+        column_config={
+            "delivery_zone_id": st.column_config.TextColumn("Zone ID"),
+            "is_doubled": st.column_config.NumberColumn("Is Doubled", format="%d"),
+        }
     )
 
     csv_bytes = filtered_df[available_cols].to_csv(index=False).encode("utf-8")

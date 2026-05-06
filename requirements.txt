@@ -1,16 +1,9 @@
-# Core
-requests==2.32.5
-pandas==2.2.3
-numpy>=1.26.0
-
-# Dashboard
-streamlit>=1.38.0
-pydeck>=0.9.0
-plotly>=5.22.0
-
-# Machine Learning
-scikit-learn>=1.5.0
-scipy>=1.13.0
-
-# Testing
-pytest>=8.0.0
+requests
+pandas
+numpy
+streamlit
+pydeck
+plotly
+scikit-learn
+scipy
+pytest

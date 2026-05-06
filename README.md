@@ -52,7 +52,8 @@ inpost/
 └── requirements.txt              # Python dependencies
 ```
 
-*(Placeholder: Link to deployment or demo video here if applicable)*
+### Demo Video
+![InPost Dashboard Interaction](assets/dashboard_demo.webp)
 
 ## Technologies
 
