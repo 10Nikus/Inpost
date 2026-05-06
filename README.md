@@ -52,8 +52,7 @@ inpost/
 └── requirements.txt              # Python dependencies
 ```
 
-### Demo Video
-![InPost Dashboard Interaction](assets/dashboard_demo.webp)
+🚀 **[Live Demo on Streamlit Community Cloud](https://inpost-jwka7qjzze5voxkgw62luv.streamlit.app/)
 
 ## Technologies
 
