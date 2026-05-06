@@ -106,7 +106,7 @@ def allocate_fleet(
 
     ice_count = max(total_cars - ev_count - hybrid_count, 0)
     available = {"ev": ev_count, "hybrid": hybrid_count, "ice": ice_count}
-    allocations: list = []
+    allocations: List[dict] = []
 
     for _, row in zone_stats.iterrows():
         needed = int(row["cars_needed"])

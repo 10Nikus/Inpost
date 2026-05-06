@@ -11,6 +11,7 @@ Usage:
 
 import streamlit as st
 import pandas as pd
+from typing import Tuple, List
 
 from src.config import (
     DEFAULT_N_ZONES,
@@ -178,7 +179,7 @@ def run_pipeline(
     total_cars: int,
     ev_count: int,
     hybrid_count: int,
-):
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[dict], pd.DataFrame]:
     """Wrapper for clustering pipeline with Streamlit caching."""
     enriched_df, zone_stats, model, polygons = run_clustering_pipeline(
         _raw_df,
